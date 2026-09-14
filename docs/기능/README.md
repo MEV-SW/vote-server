@@ -2,4 +2,5 @@
 
 | 카드 | 기능 | 릴리즈 | 상태 | 문서 |
 |---|---|---|---|---|
-| [#1](https://github.com/MEV-SW/vote-server/issues/1) | 인터뷰 폼 API·스키마 | 2026-09 | 스펙 | [API스펙_인터뷰폼](1-인터뷰폼/API스펙_인터뷰폼.md) · [기술스펙_인터뷰폼](1-인터뷰폼/기술스펙_인터뷰폼.md) |
+| [#1](https://github.com/MEV-SW/vote-server/issues/1) | 인터뷰 폼 API·스키마 | 2026-09 | 완료 | [API스펙_인터뷰폼](1-인터뷰폼/API스펙_인터뷰폼.md) · [기술스펙_인터뷰폼](1-인터뷰폼/기술스펙_인터뷰폼.md) |
+| [#2](https://github.com/MEV-SW/vote-server/issues/2) | 무기명 투표 | 2026-09 | 인터페이스정의 | [API스펙_무기명투표](2-무기명/API스펙_무기명투표.md) |
