@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models import Ballot, EligibleVoter, Poll, VoteItem
 from app.schemas.poll import CheckResponse, VoteEntry, VoteSubmit
+from app.services.poll_identity import is_form
 from app.services.poll_notify import notify_results_updated
 from app.services.eligibility_service import (
     _voter_fingerprint,
@@ -51,6 +52,8 @@ def check_vote(
     fingerprint: str,
     voter_token: str | None = None,
 ) -> CheckResponse:
+    if is_form(poll):
+        raise HTTPException(status_code=400, detail="폼은 /polls/{id}/check 응답 경로를 사용하세요.")
     if poll.poll_type == "restricted":
         if not voter_token:
             return CheckResponse(voted=False)
@@ -87,6 +90,8 @@ def check_vote(
 def submit_vote(db: Session, poll: Poll, body: VoteSubmit) -> None:
     if poll.status != "active":
         raise HTTPException(status_code=403, detail="Poll is not active")
+    if is_form(poll):
+        raise HTTPException(status_code=400, detail="폼은 /polls/{id}/responses 를 사용하세요.")
 
     eligible_voter_id: int | None = None
     fingerprint = body.fingerprint

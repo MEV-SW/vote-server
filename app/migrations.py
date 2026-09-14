@@ -43,6 +43,18 @@ def ensure_schema(engine: Engine) -> None:
                     text("ALTER TABLE polls ADD COLUMN verify_fields VARCHAR(50) NOT NULL DEFAULT 'name,email,phone'")
                 )
             logger.info("Added polls.verify_fields column")
+        if "kind" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE polls ADD COLUMN kind VARCHAR(20) NOT NULL DEFAULT 'vote'"))
+            logger.info("Added polls.kind column")
+        if "verify_method" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE polls ADD COLUMN verify_method VARCHAR(20) NOT NULL DEFAULT 'pin'"))
+            logger.info("Added polls.verify_method column")
+        if "identity_mode" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE polls ADD COLUMN identity_mode VARCHAR(20) NOT NULL DEFAULT 'secret'"))
+            logger.info("Added polls.identity_mode column")
 
     if "ballots" in tables:
         cols = {c["name"] for c in insp.get_columns("ballots")}

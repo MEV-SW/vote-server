@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 if TYPE_CHECKING:
+    from app.models.answer import Answer
     from app.models.candidate import Candidate
     from app.models.poll import Poll
 
@@ -29,6 +30,9 @@ class Ballot(Base):
     poll: Mapped["Poll"] = relationship("Poll", back_populates="ballots")
     items: Mapped[list["VoteItem"]] = relationship(
         "VoteItem", back_populates="ballot", cascade="all, delete-orphan"
+    )
+    answers: Mapped[list["Answer"]] = relationship(
+        "Answer", back_populates="ballot", cascade="all, delete-orphan"
     )
 
 

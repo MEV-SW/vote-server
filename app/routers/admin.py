@@ -10,7 +10,7 @@ from app.auth.deps import get_current_admin
 from app.auth.jwt import create_access_token, hash_password, verify_password
 from app.config import get_settings
 from app.database import get_db
-from app.models import Admin, Ballot, Candidate, EligibleVoter, Poll
+from app.models import Admin, Ballot, Candidate, EligibleVoter, Poll, Question, QuestionOption
 from app.schemas.admin import (
     LoginRequest,
     PresignRequest,
@@ -29,6 +29,13 @@ from app.schemas.poll import (
     EligibleVoterBulkCreate,
     EligibleVoterCreate,
     EligibleVoterOut,
+    FormResultsOut,
+    QuestionCreate,
+    QuestionOptionCreate,
+    QuestionOptionOut,
+    QuestionOptionUpdate,
+    QuestionOut,
+    QuestionUpdate,
     RevokeVoterVoteResponse,
     PollCreate,
     PollListItem,
@@ -45,9 +52,37 @@ from app.services.eligibility_service import (
 )
 from app.services.verify_fields import parse_verify_fields, serialize_verify_fields
 from app.services.aggregate_service import get_results, results_csv
+from app.services.form_service import form_results_csv, get_form_results
+from app.services.poll_identity import is_form
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 settings = get_settings()
+
+
+def _poll_with_relations(db: Session, poll_id: int) -> Poll | None:
+    return (
+        db.query(Poll)
+        .options(
+            joinedload(Poll.candidates),
+            joinedload(Poll.questions).joinedload(Question.options),
+        )
+        .filter(Poll.id == poll_id)
+        .first()
+    )
+
+
+def _require_poll(db: Session, poll_id: int, *, with_relations: bool = False) -> Poll:
+    poll = _poll_with_relations(db, poll_id) if with_relations else db.query(Poll).filter(Poll.id == poll_id).first()
+    if not poll:
+        raise HTTPException(status_code=404, detail="Poll not found")
+    return poll
+
+
+def _get_form_poll(db: Session, poll_id: int) -> Poll:
+    poll = _require_poll(db, poll_id)
+    if not is_form(poll):
+        raise HTTPException(status_code=400, detail="폼이 아닙니다.")
+    return poll
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -67,6 +102,7 @@ def list_polls(
     items: list[PollListItem] = []
     for p in polls:
         cand_count = db.query(func.count(Candidate.id)).filter(Candidate.poll_id == p.id).scalar() or 0
+        question_count = db.query(func.count(Question.id)).filter(Question.poll_id == p.id).scalar() or 0
         ballot_count = db.query(func.count(Ballot.id)).filter(Ballot.poll_id == p.id).scalar() or 0
         items.append(
             PollListItem(
@@ -75,8 +111,12 @@ def list_polls(
                 category=p.category,
                 status=p.status,
                 candidates=cand_count,
+                questions=question_count,
                 max_selections=p.max_selections or 3,
                 poll_type=p.poll_type or "open",
+                kind=p.kind or "vote",
+                verify_method=p.verify_method or "pin",
+                identity_mode=p.identity_mode or "secret",
                 ballots=ballot_count,
                 eligible=p.eligible_count,
                 created_at=p.created_at,
@@ -94,6 +134,7 @@ def create_poll(
     _admin: Admin = Depends(get_current_admin),
 ) -> Poll:
     poll_type = body.poll_type or "open"
+    kind = body.kind or "vote"
     poll = Poll(
         title=body.title,
         subtitle=body.subtitle,
@@ -104,6 +145,9 @@ def create_poll(
         eligible_count=0 if poll_type == "restricted" else body.eligible_count,
         max_selections=body.max_selections,
         poll_type=poll_type,
+        kind=kind,
+        verify_method=body.verify_method or "pin",
+        identity_mode=body.identity_mode or ("identified" if kind == "form" else "secret"),
         verify_fields=(
             serialize_verify_fields(body.verify_fields)
             if poll_type == "restricted"
@@ -126,8 +170,9 @@ def create_poll(
             )
         )
     db.commit()
-    db.refresh(poll)
-    return db.query(Poll).options(joinedload(Poll.candidates)).filter(Poll.id == poll.id).one()
+    loaded = _poll_with_relations(db, poll.id)
+    assert loaded is not None
+    return loaded
 
 
 @router.get("/polls/{poll_id}", response_model=PollOut)
@@ -136,10 +181,7 @@ def get_poll_admin(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> Poll:
-    poll = db.query(Poll).options(joinedload(Poll.candidates)).filter(Poll.id == poll_id).first()
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
-    return poll
+    return _require_poll(db, poll_id, with_relations=True)
 
 
 @router.patch("/polls/{poll_id}", response_model=PollOut)
@@ -149,18 +191,28 @@ def update_poll(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> Poll:
-    poll = db.query(Poll).options(joinedload(Poll.candidates)).filter(Poll.id == poll_id).first()
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
+    poll = _require_poll(db, poll_id, with_relations=True)
     data = body.model_dump(exclude_unset=True)
     if "verify_fields" in data and data["verify_fields"] is not None:
         data["verify_fields"] = serialize_verify_fields(data["verify_fields"])
+    if data.get("status") == "active":
+        if is_form(poll):
+            qcount = db.query(func.count(Question.id)).filter(Question.poll_id == poll.id).scalar() or 0
+            if qcount < 1:
+                raise HTTPException(status_code=400, detail="문항을 1개 이상 만든 뒤 시작할 수 있습니다.")
+        else:
+            ccount = db.query(func.count(Candidate.id)).filter(Candidate.poll_id == poll.id).scalar() or 0
+            if ccount < 2:
+                raise HTTPException(status_code=400, detail="후보를 2명 이상 등록한 뒤 시작할 수 있습니다.")
+    if is_form(poll) and data.get("identity_mode") == "secret":
+        raise HTTPException(status_code=400, detail="폼은 기명만 지원합니다.")
     for field, value in data.items():
         setattr(poll, field, value)
     db.commit()
-    db.refresh(poll)
     notify_poll_updated(poll_id)
-    return poll
+    loaded = _poll_with_relations(db, poll_id)
+    assert loaded is not None
+    return loaded
 
 
 @router.delete("/polls/{poll_id}", status_code=204)
@@ -449,9 +501,9 @@ def poll_results(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> ResultsOut:
-    poll = db.query(Poll).filter(Poll.id == poll_id).first()
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
+    poll = _require_poll(db, poll_id)
+    if is_form(poll):
+        raise HTTPException(status_code=400, detail="폼 결과는 /admin/polls/{id}/form-results 를 사용하세요.")
     return get_results(db, poll_id, poll.eligible_count)
 
 
@@ -461,11 +513,176 @@ def poll_results_csv(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> PlainTextResponse:
-    poll = db.query(Poll).filter(Poll.id == poll_id).first()
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
+    poll = _require_poll(db, poll_id)
+    if is_form(poll):
+        raise HTTPException(status_code=400, detail="폼 CSV는 /admin/polls/{id}/form-results/csv 를 사용하세요.")
     content = results_csv(db, poll_id, poll.eligible_count)
     return PlainTextResponse(content, media_type="text/csv")
+
+
+@router.get("/polls/{poll_id}/form-results", response_model=FormResultsOut)
+def poll_form_results(
+    poll_id: int,
+    db: Session = Depends(get_db),
+    _admin: Admin = Depends(get_current_admin),
+) -> FormResultsOut:
+    poll = _get_form_poll(db, poll_id)
+    return get_form_results(db, poll, include_responses=True)
+
+
+@router.get("/polls/{poll_id}/form-results/csv")
+def poll_form_results_csv(
+    poll_id: int,
+    db: Session = Depends(get_db),
+    _admin: Admin = Depends(get_current_admin),
+) -> PlainTextResponse:
+    poll = _get_form_poll(db, poll_id)
+    return PlainTextResponse(form_results_csv(db, poll), media_type="text/csv")
+
+
+@router.post("/polls/{poll_id}/questions", response_model=QuestionOut, status_code=201)
+def add_question(
+    poll_id: int,
+    body: QuestionCreate,
+    db: Session = Depends(get_db),
+    _admin: Admin = Depends(get_current_admin),
+) -> Question:
+    poll = _get_form_poll(db, poll_id)
+    max_order = db.query(func.max(Question.order_num)).filter(Question.poll_id == poll.id).scalar() or 0
+    q = Question(
+        poll_id=poll.id,
+        title=body.title,
+        help_text=body.help_text,
+        type=body.type,
+        required=body.required,
+        order_num=body.order_num if body.order_num is not None else max_order + 1,
+        scale_min=body.scale_min,
+        scale_max=body.scale_max,
+    )
+    db.add(q)
+    db.flush()
+    for i, opt in enumerate(body.options):
+        db.add(QuestionOption(question_id=q.id, label=opt.label, order_num=i))
+    db.commit()
+    return (
+        db.query(Question)
+        .options(joinedload(Question.options))
+        .filter(Question.id == q.id)
+        .one()
+    )
+
+
+@router.patch("/polls/{poll_id}/questions/{question_id}", response_model=QuestionOut)
+def update_question(
+    poll_id: int,
+    question_id: int,
+    body: QuestionUpdate,
+    db: Session = Depends(get_db),
+    _admin: Admin = Depends(get_current_admin),
+) -> Question:
+    _get_form_poll(db, poll_id)
+    q = (
+        db.query(Question)
+        .options(joinedload(Question.options))
+        .filter(Question.id == question_id, Question.poll_id == poll_id)
+        .first()
+    )
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(q, field, value)
+    db.commit()
+    db.refresh(q)
+    return q
+
+
+@router.delete("/polls/{poll_id}/questions/{question_id}", status_code=204)
+def delete_question(
+    poll_id: int,
+    question_id: int,
+    db: Session = Depends(get_db),
+    _admin: Admin = Depends(get_current_admin),
+) -> None:
+    _get_form_poll(db, poll_id)
+    q = db.query(Question).filter(Question.id == question_id, Question.poll_id == poll_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found")
+    db.delete(q)
+    db.commit()
+
+
+@router.post("/polls/{poll_id}/questions/{question_id}/options", response_model=QuestionOptionOut, status_code=201)
+def add_question_option(
+    poll_id: int,
+    question_id: int,
+    body: QuestionOptionCreate,
+    db: Session = Depends(get_db),
+    _admin: Admin = Depends(get_current_admin),
+) -> QuestionOption:
+    _get_form_poll(db, poll_id)
+    q = db.query(Question).filter(Question.id == question_id, Question.poll_id == poll_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found")
+    max_order = db.query(func.max(QuestionOption.order_num)).filter(QuestionOption.question_id == q.id).scalar() or 0
+    opt = QuestionOption(question_id=q.id, label=body.label, order_num=max_order + 1)
+    db.add(opt)
+    db.commit()
+    db.refresh(opt)
+    return opt
+
+
+@router.patch("/polls/{poll_id}/questions/{question_id}/options/{option_id}", response_model=QuestionOptionOut)
+def update_question_option(
+    poll_id: int,
+    question_id: int,
+    option_id: int,
+    body: QuestionOptionUpdate,
+    db: Session = Depends(get_db),
+    _admin: Admin = Depends(get_current_admin),
+) -> QuestionOption:
+    _get_form_poll(db, poll_id)
+    opt = (
+        db.query(QuestionOption)
+        .join(Question)
+        .filter(
+            QuestionOption.id == option_id,
+            QuestionOption.question_id == question_id,
+            Question.poll_id == poll_id,
+        )
+        .first()
+    )
+    if not opt:
+        raise HTTPException(status_code=404, detail="Option not found")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(opt, field, value)
+    db.commit()
+    db.refresh(opt)
+    return opt
+
+
+@router.delete("/polls/{poll_id}/questions/{question_id}/options/{option_id}", status_code=204)
+def delete_question_option(
+    poll_id: int,
+    question_id: int,
+    option_id: int,
+    db: Session = Depends(get_db),
+    _admin: Admin = Depends(get_current_admin),
+) -> None:
+    _get_form_poll(db, poll_id)
+    opt = (
+        db.query(QuestionOption)
+        .join(Question)
+        .filter(
+            QuestionOption.id == option_id,
+            QuestionOption.question_id == question_id,
+            Question.poll_id == poll_id,
+        )
+        .first()
+    )
+    if not opt:
+        raise HTTPException(status_code=404, detail="Option not found")
+    db.delete(opt)
+    db.commit()
 
 
 @router.post("/upload/presign", response_model=PresignResponse)
