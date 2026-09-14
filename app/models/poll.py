@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from app.models.ballot import Ballot
     from app.models.candidate import Candidate
     from app.models.eligible_voter import EligibleVoter
+    from app.models.question import Question
 
 
 class Poll(Base):
@@ -26,6 +27,9 @@ class Poll(Base):
     max_selections: Mapped[int] = mapped_column(Integer, default=3)
     poll_type: Mapped[str] = mapped_column(String(20), default="open")  # open | restricted
     verify_fields: Mapped[str] = mapped_column(String(50), default="name,email,phone")
+    kind: Mapped[str] = mapped_column(String(20), default="vote")  # vote | form
+    verify_method: Mapped[str] = mapped_column(String(20), default="pin")  # pin | sso
+    identity_mode: Mapped[str] = mapped_column(String(20), default="secret")  # identified | secret
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -33,6 +37,10 @@ class Poll(Base):
 
     candidates: Mapped[list["Candidate"]] = relationship(
         "Candidate", back_populates="poll", cascade="all, delete-orphan"
+    )
+    questions: Mapped[list["Question"]] = relationship(
+        "Question", back_populates="poll", cascade="all, delete-orphan",
+        order_by="Question.order_num",
     )
     ballots: Mapped[list["Ballot"]] = relationship(
         "Ballot", back_populates="poll", cascade="all, delete-orphan"
