@@ -4,3 +4,4 @@
 |---|---|---|---|---|
 | [#1](https://github.com/MEV-SW/vote-server/issues/1) | 인터뷰 폼 API·스키마 | 2026-09 | 완료 | [API스펙_인터뷰폼](1-인터뷰폼/API스펙_인터뷰폼.md) · [기술스펙_인터뷰폼](1-인터뷰폼/기술스펙_인터뷰폼.md) |
 | [#2](https://github.com/MEV-SW/vote-server/issues/2) | 무기명 투표 | 2026-09 | 인터페이스정의 | [API스펙_무기명투표](2-무기명/API스펙_무기명투표.md) |
+| [#3](https://github.com/MEV-SW/vote-server/issues/3) | Keycloak 앱 접근 | 2026-09 | 인터페이스정의 | [API스펙_Keycloak앱접근](3-Keycloak/API스펙_Keycloak앱접근.md) |
