@@ -42,6 +42,7 @@ from app.schemas.poll import (
     PollOut,
     PollUpdate,
     ResultsOut,
+    AuthConfigOut,
 )
 from app.services.eligibility_service import (
     _collect_input_values,
@@ -53,7 +54,8 @@ from app.services.eligibility_service import (
 from app.services.verify_fields import parse_verify_fields, serialize_verify_fields
 from app.services.aggregate_service import get_results, results_csv
 from app.services.form_service import form_results_csv, get_form_results
-from app.services.poll_identity import is_form, is_secret
+from app.services.keycloak import auth_config
+from app.services.poll_identity import is_form, is_secret, is_sso
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 settings = get_settings()
@@ -85,8 +87,16 @@ def _get_form_poll(db: Session, poll_id: int) -> Poll:
     return poll
 
 
+@router.get("/auth/config", response_model=AuthConfigOut)
+def get_auth_config() -> AuthConfigOut:
+    return AuthConfigOut(**auth_config())
+
+
 @router.post("/login", response_model=TokenResponse)
 def login(body: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
+    cfg = auth_config()
+    if not cfg["local_enabled"]:
+        raise HTTPException(status_code=400, detail="로컬 로그인이 비활성화되어 있습니다. 회사 계정으로 로그인하세요.")
     admin = db.query(Admin).filter(Admin.username == body.username).first()
     if not admin or not verify_password(body.password, admin.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -376,6 +386,8 @@ def add_eligible_voter(
     poll = db.query(Poll).filter(Poll.id == poll_id).first()
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
+    if is_sso(poll):
+        raise HTTPException(status_code=400, detail="회사 계정 확인 항목은 대상자를 수동 등록하지 않습니다.")
     voter = _add_eligible_voter_row(db, poll, body)
     db.commit()
     db.refresh(voter)
@@ -395,6 +407,8 @@ def add_eligible_voters_bulk(
     poll = db.query(Poll).filter(Poll.id == poll_id).first()
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
+    if is_sso(poll):
+        raise HTTPException(status_code=400, detail="회사 계정 확인 항목은 대상자를 수동 등록하지 않습니다.")
     created: list[EligibleVoter] = []
     for item in body.voters:
         created.append(_add_eligible_voter_row(db, poll, item))

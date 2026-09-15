@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.jwt import create_voter_token, decode_voter_token, hash_password, verify_password
 from app.models import Ballot, EligibleVoter, Poll
-from app.services.poll_identity import is_secret
+from app.services.poll_identity import is_secret, is_sso
 from app.services.secret_ballot import find_participation, issue_ballot_token, record_participation
 from app.services.verify_fields import parse_verify_fields
 
@@ -169,6 +169,8 @@ def verify_voter(
 ) -> dict:
     if poll.poll_type != "restricted":
         raise HTTPException(status_code=400, detail="This poll does not require verification")
+    if is_sso(poll):
+        raise HTTPException(status_code=400, detail="이 항목은 회사 계정 확인이 필요합니다.")
 
     fields = parse_verify_fields(poll.verify_fields)
     values = _collect_input_values(fields, name=name, email=email, phone=phone)
@@ -261,3 +263,90 @@ def decode_voter_for_poll(token: str, poll_id: int) -> int:
     if token_poll_id != poll_id:
         raise HTTPException(status_code=401, detail="인증이 만료되었거나 유효하지 않습니다.")
     return voter_id
+
+
+
+def upsert_sso_voter(db: Session, poll: Poll, *, idp_sub: str, name: str, email: str | None) -> EligibleVoter:
+    voter = (
+        db.query(EligibleVoter)
+        .filter(EligibleVoter.poll_id == poll.id, EligibleVoter.idp_sub == idp_sub)
+        .first()
+    )
+    email_norm = normalize_email(email) if email else None
+    name_norm = normalize_name(name) or idp_sub.lower()
+    if voter:
+        voter.name = name
+        voter.name_norm = name_norm
+        if email:
+            voter.email = email
+            voter.email_norm = email_norm
+        db.flush()
+        return voter
+    voter = EligibleVoter(
+        poll_id=poll.id,
+        name=name,
+        email=email,
+        phone=None,
+        name_norm=name_norm,
+        email_norm=email_norm,
+        phone_norm=None,
+        idp_sub=idp_sub,
+    )
+    db.add(voter)
+    db.flush()
+    return voter
+
+
+def verify_sso(db: Session, poll: Poll, access_token: str) -> dict:
+    from app.services.keycloak import decode_keycloak_token, display_name
+
+    if poll.poll_type != "restricted":
+        raise HTTPException(status_code=400, detail="This poll does not require verification")
+    if not is_sso(poll):
+        raise HTTPException(status_code=400, detail="이 항목은 회사 계정 확인을 사용하지 않습니다.")
+
+    payload = decode_keycloak_token(access_token)
+    sub = str(payload["sub"])
+    name = display_name(payload)
+    email = payload.get("email")
+
+    if is_secret(poll):
+        already = find_participation(db, poll.id, sub) is not None
+        if already:
+            return {
+                "verified": True,
+                "voter_token": None,
+                "ballot_token": None,
+                "voter_name": "투표자",
+                "already_voted": True,
+                "pin_required": False,
+                "pin_setup": False,
+                "identity_mode": "secret",
+            }
+        record_participation(db, poll.id, sub)
+        db.commit()
+        return {
+            "verified": True,
+            "voter_token": None,
+            "ballot_token": issue_ballot_token(poll.id),
+            "voter_name": "투표자",
+            "already_voted": False,
+            "pin_required": False,
+            "pin_setup": False,
+            "identity_mode": "secret",
+        }
+
+    voter = upsert_sso_voter(db, poll, idp_sub=sub, name=name, email=email)
+    already_voted = resolve_voter_ballot(db, poll.id, voter) is not None
+    sync_eligible_count(db, poll.id)
+    db.commit()
+    return {
+        "verified": True,
+        "voter_token": create_voter_token(poll.id, voter.id),
+        "ballot_token": None,
+        "voter_name": voter.name,
+        "already_voted": already_voted,
+        "pin_required": False,
+        "pin_setup": False,
+        "identity_mode": "identified",
+    }
