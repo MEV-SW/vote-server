@@ -62,6 +62,10 @@ def ensure_schema(engine: Engine) -> None:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE ballots ADD COLUMN eligible_voter_id INTEGER"))
             logger.info("Added ballots.eligible_voter_id column")
+        if "ballot_token_hash" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE ballots ADD COLUMN ballot_token_hash VARCHAR(64)"))
+            logger.info("Added ballots.ballot_token_hash column")
 
     if "eligible_voters" in tables:
         cols = {c["name"] for c in insp.get_columns("eligible_voters")}

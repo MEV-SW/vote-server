@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.auth.jwt import create_voter_token, decode_voter_token, hash_password, verify_password
 from app.models import Ballot, EligibleVoter, Poll
+from app.services.poll_identity import is_secret
+from app.services.secret_ballot import find_participation, issue_ballot_token, record_participation
 from app.services.verify_fields import parse_verify_fields
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -181,17 +183,23 @@ def verify_voter(
 
     voter = matched[0]
     display = _display_name(voter, fields)
-    already_voted = resolve_voter_ballot(db, poll.id, voter, voters) is not None
+    if is_secret(poll):
+        already_voted = find_participation(db, poll.id, f"pin:{voter.id}") is not None
+    else:
+        already_voted = resolve_voter_ballot(db, poll.id, voter, voters) is not None
     pin_setup = voter.pin_hash is None
+    identity_mode = "secret" if is_secret(poll) else "identified"
 
     if not pin:
         return {
             "verified": False,
             "voter_token": None,
+            "ballot_token": None,
             "voter_name": display,
             "already_voted": already_voted,
             "pin_required": True,
             "pin_setup": pin_setup,
+            "identity_mode": identity_mode,
         }
 
     pin_value = _validate_pin(pin)
@@ -201,14 +209,47 @@ def verify_voter(
     elif not verify_password(pin_value, voter.pin_hash or ""):
         raise HTTPException(status_code=403, detail="비밀번호가 일치하지 않습니다.")
 
+    if is_secret(poll):
+        return _secret_pin_result(db, poll, voter)
+
     token = create_voter_token(poll.id, voter.id)
     return {
         "verified": True,
         "voter_token": token,
+        "ballot_token": None,
         "voter_name": display,
         "already_voted": already_voted,
         "pin_required": False,
         "pin_setup": False,
+        "identity_mode": "identified",
+    }
+
+
+def _secret_pin_result(db: Session, poll: Poll, voter: EligibleVoter) -> dict:
+    subject = f"pin:{voter.id}"
+    already = find_participation(db, poll.id, subject) is not None
+    if already:
+        return {
+            "verified": True,
+            "voter_token": None,
+            "ballot_token": None,
+            "voter_name": "투표자",
+            "already_voted": True,
+            "pin_required": False,
+            "pin_setup": False,
+            "identity_mode": "secret",
+        }
+    record_participation(db, poll.id, subject)
+    db.commit()
+    return {
+        "verified": True,
+        "voter_token": None,
+        "ballot_token": issue_ballot_token(poll.id),
+        "voter_name": "투표자",
+        "already_voted": False,
+        "pin_required": False,
+        "pin_setup": False,
+        "identity_mode": "secret",
     }
 
 

@@ -25,6 +25,7 @@ class Ballot(Base):
     eligible_voter_id: Mapped[int | None] = mapped_column(
         ForeignKey("eligible_voters.id", ondelete="SET NULL"), nullable=True
     )
+    ballot_token_hash: Mapped[str | None] = mapped_column(String(64))
     voted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     poll: Mapped["Poll"] = relationship("Poll", back_populates="ballots")
