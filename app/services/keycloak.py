@@ -1,6 +1,7 @@
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from fastapi import HTTPException
@@ -84,6 +85,47 @@ def display_name(payload: dict) -> str:
     )
 
 
+def password_grant(username: str, password: str) -> str:
+    """Keycloak Direct Access Grants (Resource Owner Password)."""
+    if not settings.keycloak_enabled:
+        raise HTTPException(status_code=503, detail="Keycloak이 설정되지 않았습니다.")
+    form: dict[str, str] = {
+        "grant_type": "password",
+        "client_id": settings.keycloak_client_id or "",
+        "username": username,
+        "password": password,
+    }
+    if settings.keycloak_client_secret:
+        form["client_secret"] = settings.keycloak_client_secret
+    body = urllib.parse.urlencode(form).encode()
+    req = urllib.request.Request(
+        f"{keycloak_issuer()}/protocol/openid-connect/token",
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        detail = "아이디 또는 비밀번호가 올바르지 않습니다."
+        try:
+            err = json.loads(exc.read().decode())
+            if err.get("error") == "unauthorized_client":
+                detail = "Keycloak 클라이언트에 Direct access grants가 켜져 있는지 확인하세요."
+            elif err.get("error_description"):
+                detail = str(err["error_description"])
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass
+        raise HTTPException(status_code=401, detail=detail) from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail="Keycloak 인증 서버에 연결할 수 없습니다.") from exc
+    token = data.get("access_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="회사 계정 인증에 실패했습니다.")
+    return str(token)
+
+
 def auth_config() -> dict:
     mode = settings.auth_mode if settings.auth_mode in ("local", "oidc", "both") else "both"
     oidc_on = mode in ("oidc", "both") and settings.keycloak_enabled
@@ -91,6 +133,7 @@ def auth_config() -> dict:
     return {
         "mode": mode,
         "local_enabled": local_on,
+        "password_login_enabled": oidc_on or local_on,
         "oidc_enabled": oidc_on,
         "issuer": settings.keycloak_issuer.rstrip("/") if oidc_on and settings.keycloak_issuer else None,
         "client_id": settings.keycloak_client_id if oidc_on else None,

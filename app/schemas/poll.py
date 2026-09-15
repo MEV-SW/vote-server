@@ -385,6 +385,7 @@ class AuthConfigOut(BaseModel):
     mode: str
     local_enabled: bool
     oidc_enabled: bool
+    password_login_enabled: bool = True
     issuer: str | None = None
     client_id: str | None = None
 

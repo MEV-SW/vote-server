@@ -54,7 +54,7 @@ from app.services.eligibility_service import (
 from app.services.verify_fields import parse_verify_fields, serialize_verify_fields
 from app.services.aggregate_service import get_results, results_csv
 from app.services.form_service import form_results_csv, get_form_results
-from app.services.keycloak import auth_config
+from app.services.keycloak import auth_config, decode_keycloak_token, has_app_access, password_grant
 from app.services.poll_identity import is_form, is_secret, is_sso
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -97,12 +97,19 @@ def get_auth_config() -> AuthConfigOut:
 @router.post("/login", response_model=TokenResponse)
 def login(body: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
     cfg = auth_config()
-    if not cfg["local_enabled"]:
-        raise HTTPException(status_code=400, detail="로컬 로그인이 비활성화되어 있습니다. 회사 계정으로 로그인하세요.")
-    admin = db.query(Admin).filter(Admin.username == body.username).first()
-    if not admin or not verify_password(body.password, admin.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    return TokenResponse(access_token=create_access_token(admin.username))
+    # Keycloak Direct Access Grants (아이디/비번 → 회사 JWT)
+    if cfg["oidc_enabled"]:
+        token = password_grant(body.username, body.password)
+        payload = decode_keycloak_token(token)
+        if not has_app_access(payload):
+            raise HTTPException(status_code=403, detail="이 앱에 접근 권한이 없습니다.")
+        return TokenResponse(access_token=token)
+    if cfg["local_enabled"]:
+        admin = db.query(Admin).filter(Admin.username == body.username).first()
+        if not admin or not verify_password(body.password, admin.password_hash):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        return TokenResponse(access_token=create_access_token(admin.username))
+    raise HTTPException(status_code=400, detail="로그인이 비활성화되어 있습니다.")
 
 
 @router.get("/polls", response_model=list[PollListItem])

@@ -23,9 +23,10 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24
     seed_mock_data: bool | None = None
     redis_url: str | None = None
-    auth_mode: str = "both"  # local | oidc | both
+    auth_mode: str = "oidc"  # local | oidc | both
     keycloak_issuer: str | None = None
     keycloak_client_id: str | None = None
+    keycloak_client_secret: str | None = None
     # App access role (not a global poll superadmin). Empty = any valid company token.
     keycloak_admin_role: str = "vote-admin"
 
