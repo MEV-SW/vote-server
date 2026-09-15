@@ -7,11 +7,24 @@ from sqlalchemy.orm import Session
 from app.auth.jwt import decode_token, hash_password
 from app.config import get_settings
 from app.database import get_db
-from app.models import Admin
+from app.models import Admin, Poll
 from app.services.keycloak import decode_keycloak_token, has_app_access
 
 security = HTTPBearer(auto_error=False)
 settings = get_settings()
+
+
+def owner_key(admin: Admin) -> str:
+    if admin.idp_sub:
+        return admin.idp_sub
+    return f"local:{admin.username}"
+
+
+def can_manage_poll(admin: Admin, poll: Poll) -> bool:
+    if poll.owner_id:
+        return poll.owner_id == owner_key(admin)
+    # Legacy rows without an owner stay with local login, not company SSO users.
+    return admin.idp_sub is None
 
 
 def _upsert_oidc_admin(db: Session, payload: dict) -> Admin:

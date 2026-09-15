@@ -3,10 +3,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
-from app.auth.deps import get_current_admin
+from app.auth.deps import can_manage_poll, get_current_admin, owner_key
 from app.auth.jwt import create_access_token, hash_password, verify_password
 from app.config import get_settings
 from app.database import get_db
@@ -73,15 +73,17 @@ def _poll_with_relations(db: Session, poll_id: int) -> Poll | None:
     )
 
 
-def _require_poll(db: Session, poll_id: int, *, with_relations: bool = False) -> Poll:
+def _require_poll(db: Session, poll_id: int, admin: Admin, *, with_relations: bool = False) -> Poll:
     poll = _poll_with_relations(db, poll_id) if with_relations else db.query(Poll).filter(Poll.id == poll_id).first()
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
+    if not can_manage_poll(admin, poll):
+        raise HTTPException(status_code=403, detail="이 투표의 관리자가 아닙니다.")
     return poll
 
 
-def _get_form_poll(db: Session, poll_id: int) -> Poll:
-    poll = _require_poll(db, poll_id)
+def _get_form_poll(db: Session, poll_id: int, admin: Admin) -> Poll:
+    poll = _require_poll(db, poll_id, admin)
     if not is_form(poll):
         raise HTTPException(status_code=400, detail="폼이 아닙니다.")
     return poll
@@ -108,7 +110,11 @@ def list_polls(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> list[PollListItem]:
-    polls = db.query(Poll).order_by(Poll.created_at.desc()).all()
+    key = owner_key(_admin)
+    q = db.query(Poll).filter(Poll.owner_id == key)
+    if _admin.idp_sub is None:
+        q = db.query(Poll).filter(or_(Poll.owner_id == key, Poll.owner_id.is_(None)))
+    polls = q.order_by(Poll.created_at.desc()).all()
     items: list[PollListItem] = []
     for p in polls:
         cand_count = db.query(func.count(Candidate.id)).filter(Candidate.poll_id == p.id).scalar() or 0
@@ -158,6 +164,8 @@ def create_poll(
         kind=kind,
         verify_method=body.verify_method or "pin",
         identity_mode=body.identity_mode or ("identified" if kind == "form" else "secret"),
+        owner_id=owner_key(_admin),
+        owner_name=_admin.username,
         verify_fields=(
             serialize_verify_fields(body.verify_fields)
             if poll_type == "restricted"
@@ -191,7 +199,7 @@ def get_poll_admin(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> Poll:
-    return _require_poll(db, poll_id, with_relations=True)
+    return _require_poll(db, poll_id, _admin, with_relations=True)
 
 
 @router.patch("/polls/{poll_id}", response_model=PollOut)
@@ -201,8 +209,10 @@ def update_poll(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> Poll:
-    poll = _require_poll(db, poll_id, with_relations=True)
+    poll = _require_poll(db, poll_id, _admin, with_relations=True)
     data = body.model_dump(exclude_unset=True)
+    data.pop("owner_id", None)
+    data.pop("owner_name", None)
     if "verify_fields" in data and data["verify_fields"] is not None:
         data["verify_fields"] = serialize_verify_fields(data["verify_fields"])
     if data.get("status") == "active":
@@ -231,9 +241,7 @@ def delete_poll(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> None:
-    poll = db.query(Poll).filter(Poll.id == poll_id).first()
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
+    poll = _require_poll(db, poll_id, _admin)
     db.delete(poll)
     db.commit()
 
@@ -245,9 +253,7 @@ def add_candidate(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> Candidate:
-    poll = db.query(Poll).filter(Poll.id == poll_id).first()
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
+    poll = _require_poll(db, poll_id, _admin)
     max_order = db.query(func.max(Candidate.order_num)).filter(Candidate.poll_id == poll_id).scalar() or 0
     cand = Candidate(
         poll_id=poll_id,
@@ -273,6 +279,7 @@ def update_candidate(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> Candidate:
+    _require_poll(db, poll_id, _admin)
     cand = (
         db.query(Candidate)
         .filter(Candidate.id == candidate_id, Candidate.poll_id == poll_id)
@@ -357,9 +364,7 @@ def list_eligible_voters(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> list[EligibleVoterOut]:
-    poll = db.query(Poll).filter(Poll.id == poll_id).first()
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
+    poll = _require_poll(db, poll_id, _admin)
     voters = (
         db.query(EligibleVoter)
         .filter(EligibleVoter.poll_id == poll_id)
@@ -383,9 +388,7 @@ def add_eligible_voter(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> EligibleVoterOut:
-    poll = db.query(Poll).filter(Poll.id == poll_id).first()
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
+    poll = _require_poll(db, poll_id, _admin)
     if is_sso(poll):
         raise HTTPException(status_code=400, detail="회사 계정 확인 항목은 대상자를 수동 등록하지 않습니다.")
     voter = _add_eligible_voter_row(db, poll, body)
@@ -404,9 +407,7 @@ def add_eligible_voters_bulk(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> list[EligibleVoterOut]:
-    poll = db.query(Poll).filter(Poll.id == poll_id).first()
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
+    poll = _require_poll(db, poll_id, _admin)
     if is_sso(poll):
         raise HTTPException(status_code=400, detail="회사 계정 확인 항목은 대상자를 수동 등록하지 않습니다.")
     created: list[EligibleVoter] = []
@@ -428,9 +429,7 @@ def revoke_voter_vote(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> RevokeVoterVoteResponse:
-    poll = db.query(Poll).filter(Poll.id == poll_id).first()
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
+    poll = _require_poll(db, poll_id, _admin)
     if poll.poll_type != "restricted":
         raise HTTPException(status_code=400, detail="불특정 투표는 대상자별 투표 취소를 지원하지 않습니다.")
     if is_secret(poll):
@@ -462,6 +461,7 @@ def delete_eligible_voter(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> None:
+    _require_poll(db, poll_id, _admin)
     voter = (
         db.query(EligibleVoter)
         .filter(EligibleVoter.id == voter_id, EligibleVoter.poll_id == poll_id)
@@ -488,6 +488,7 @@ def delete_candidate(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> None:
+    _require_poll(db, poll_id, _admin)
     cand = (
         db.query(Candidate)
         .filter(Candidate.id == candidate_id, Candidate.poll_id == poll_id)
@@ -506,9 +507,7 @@ def reset_poll_votes(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> ResetVotesResponse:
-    poll = db.query(Poll).filter(Poll.id == poll_id).first()
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
+    poll = _require_poll(db, poll_id, _admin)
     ballots = db.query(Ballot).filter(Ballot.poll_id == poll_id).all()
     count = len(ballots)
     for ballot in ballots:
@@ -524,7 +523,7 @@ def poll_results(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> ResultsOut:
-    poll = _require_poll(db, poll_id)
+    poll = _require_poll(db, poll_id, _admin)
     if is_form(poll):
         raise HTTPException(status_code=400, detail="폼 결과는 /admin/polls/{id}/form-results 를 사용하세요.")
     return get_results(db, poll_id, poll.eligible_count)
@@ -536,7 +535,7 @@ def poll_results_csv(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> PlainTextResponse:
-    poll = _require_poll(db, poll_id)
+    poll = _require_poll(db, poll_id, _admin)
     if is_form(poll):
         raise HTTPException(status_code=400, detail="폼 CSV는 /admin/polls/{id}/form-results/csv 를 사용하세요.")
     content = results_csv(db, poll_id, poll.eligible_count)
@@ -549,7 +548,7 @@ def poll_form_results(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> FormResultsOut:
-    poll = _get_form_poll(db, poll_id)
+    poll = _get_form_poll(db, poll_id, _admin)
     return get_form_results(db, poll, include_responses=True)
 
 
@@ -559,7 +558,7 @@ def poll_form_results_csv(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> PlainTextResponse:
-    poll = _get_form_poll(db, poll_id)
+    poll = _get_form_poll(db, poll_id, _admin)
     return PlainTextResponse(form_results_csv(db, poll), media_type="text/csv")
 
 
@@ -570,7 +569,7 @@ def add_question(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> Question:
-    poll = _get_form_poll(db, poll_id)
+    poll = _get_form_poll(db, poll_id, _admin)
     max_order = db.query(func.max(Question.order_num)).filter(Question.poll_id == poll.id).scalar() or 0
     q = Question(
         poll_id=poll.id,
@@ -603,7 +602,7 @@ def update_question(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> Question:
-    _get_form_poll(db, poll_id)
+    _get_form_poll(db, poll_id, _admin)
     q = (
         db.query(Question)
         .options(joinedload(Question.options))
@@ -626,7 +625,7 @@ def delete_question(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> None:
-    _get_form_poll(db, poll_id)
+    _get_form_poll(db, poll_id, _admin)
     q = db.query(Question).filter(Question.id == question_id, Question.poll_id == poll_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found")
@@ -642,7 +641,7 @@ def add_question_option(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> QuestionOption:
-    _get_form_poll(db, poll_id)
+    _get_form_poll(db, poll_id, _admin)
     q = db.query(Question).filter(Question.id == question_id, Question.poll_id == poll_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found")
@@ -663,7 +662,7 @@ def update_question_option(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> QuestionOption:
-    _get_form_poll(db, poll_id)
+    _get_form_poll(db, poll_id, _admin)
     opt = (
         db.query(QuestionOption)
         .join(Question)
@@ -691,7 +690,7 @@ def delete_question_option(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin),
 ) -> None:
-    _get_form_poll(db, poll_id)
+    _get_form_poll(db, poll_id, _admin)
     opt = (
         db.query(QuestionOption)
         .join(Question)
