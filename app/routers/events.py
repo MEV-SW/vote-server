@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.auth.deps import get_current_admin_from_token
+from app.auth.deps import can_manage_poll, get_current_admin_from_token
 from app.database import get_db
 from app.models import Admin, Poll
 from app.services.poll_events import subscribe_poll_events
@@ -56,5 +56,7 @@ async def admin_poll_events(
     db: Session = Depends(get_db),
     _admin: Admin = Depends(get_current_admin_from_token),
 ):
-    _poll_or_404(db, poll_id)
+    poll = _poll_or_404(db, poll_id)
+    if not can_manage_poll(_admin, poll):
+        raise HTTPException(status_code=403, detail="이 투표의 관리자가 아닙니다.")
     return await _sse_stream(poll_id, request)

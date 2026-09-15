@@ -55,6 +55,14 @@ def ensure_schema(engine: Engine) -> None:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE polls ADD COLUMN identity_mode VARCHAR(20) NOT NULL DEFAULT 'secret'"))
             logger.info("Added polls.identity_mode column")
+        if "owner_id" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE polls ADD COLUMN owner_id VARCHAR(200)"))
+            logger.info("Added polls.owner_id column")
+        if "owner_name" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE polls ADD COLUMN owner_name VARCHAR(200)"))
+            logger.info("Added polls.owner_name column")
 
     if "admins" in tables:
         admin_cols = {c["name"] for c in insp.get_columns("admins")}

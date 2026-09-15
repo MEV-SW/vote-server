@@ -31,6 +31,8 @@ class Poll(Base):
     kind: Mapped[str] = mapped_column(String(20), default="vote")  # vote | form
     verify_method: Mapped[str] = mapped_column(String(20), default="pin")  # pin | sso
     identity_mode: Mapped[str] = mapped_column(String(20), default="secret")  # identified | secret
+    owner_id: Mapped[str | None] = mapped_column(String(200))
+    owner_name: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
