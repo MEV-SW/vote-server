@@ -130,13 +130,14 @@ def check_poll_vote(
     poll_id: int,
     fingerprint: str = Query(..., min_length=8, max_length=64),
     voter_token: str | None = Query(default=None),
+    ballot_token: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> CheckResponse:
     poll = _get_poll_or_404(db, poll_id)
     if is_form(poll):
         voted, answers = check_response(db, poll, fingerprint, voter_token)
         return CheckResponse(voted=voted, answers=answers)
-    return check_vote(db, poll, fingerprint, voter_token)
+    return check_vote(db, poll, fingerprint, voter_token, ballot_token)
 
 
 @router.post("/{poll_id}/vote", status_code=201)

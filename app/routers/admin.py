@@ -53,7 +53,7 @@ from app.services.eligibility_service import (
 from app.services.verify_fields import parse_verify_fields, serialize_verify_fields
 from app.services.aggregate_service import get_results, results_csv
 from app.services.form_service import form_results_csv, get_form_results
-from app.services.poll_identity import is_form
+from app.services.poll_identity import is_form, is_secret
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 settings = get_settings()
@@ -356,6 +356,13 @@ def list_eligible_voters(
         .order_by(EligibleVoter.id.asc())
         .all()
     )
+    if is_secret(poll):
+        return [
+            EligibleVoterOut(
+                id=v.id, name=v.name, email=v.email, phone=v.phone, voted=False, voted_at=None
+            )
+            for v in voters
+        ]
     return [_eligible_voter_out(db, poll_id, v, voters) for v in voters]
 
 
@@ -412,6 +419,8 @@ def revoke_voter_vote(
         raise HTTPException(status_code=404, detail="Poll not found")
     if poll.poll_type != "restricted":
         raise HTTPException(status_code=400, detail="불특정 투표는 대상자별 투표 취소를 지원하지 않습니다.")
+    if is_secret(poll):
+        raise HTTPException(status_code=400, detail="개인별 투표 취소를 지원하지 않습니다.")
 
     voter = (
         db.query(EligibleVoter)

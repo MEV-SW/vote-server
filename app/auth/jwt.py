@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
@@ -50,5 +52,29 @@ def decode_voter_token(token: str) -> tuple[int, int] | None:
         if poll_id is None or voter_id is None:
             return None
         return int(poll_id), int(voter_id)
+    except JWTError:
+        return None
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def create_ballot_token(poll_id: int) -> str:
+    expire = datetime.now(UTC) + timedelta(days=7)
+    return jwt.encode(
+        {"typ": "ballot", "poll_id": poll_id, "nonce": secrets.token_hex(16), "exp": expire},
+        settings.secret_key,
+        algorithm=ALGORITHM,
+    )
+
+
+def decode_ballot_token(token: str) -> int | None:
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+        if payload.get("typ") != "ballot":
+            return None
+        poll_id = payload.get("poll_id")
+        return int(poll_id) if poll_id is not None else None
     except JWTError:
         return None

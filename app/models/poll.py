@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from app.models.ballot import Ballot
     from app.models.candidate import Candidate
     from app.models.eligible_voter import EligibleVoter
+    from app.models.participation import Participation
     from app.models.question import Question
 
 
@@ -47,4 +48,7 @@ class Poll(Base):
     )
     eligible_voters: Mapped[list["EligibleVoter"]] = relationship(
         "EligibleVoter", back_populates="poll", cascade="all, delete-orphan"
+    )
+    participations: Mapped[list["Participation"]] = relationship(
+        "Participation", back_populates="poll", cascade="all, delete-orphan"
     )
