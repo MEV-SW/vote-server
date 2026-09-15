@@ -9,4 +9,5 @@ bcrypt==4.2.1
 python-multipart==0.0.20
 boto3==1.35.76
 aiosqlite==0.20.0
+psycopg[binary]==3.3.5
 redis[hiredis]==5.2.1
