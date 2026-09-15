@@ -56,6 +56,13 @@ def ensure_schema(engine: Engine) -> None:
                 conn.execute(text("ALTER TABLE polls ADD COLUMN identity_mode VARCHAR(20) NOT NULL DEFAULT 'secret'"))
             logger.info("Added polls.identity_mode column")
 
+    if "admins" in tables:
+        admin_cols = {c["name"] for c in insp.get_columns("admins")}
+        if "idp_sub" not in admin_cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE admins ADD COLUMN idp_sub VARCHAR(200)"))
+            logger.info("Added admins.idp_sub column")
+
     if "ballots" in tables:
         cols = {c["name"] for c in insp.get_columns("ballots")}
         if "eligible_voter_id" not in cols:
@@ -73,6 +80,10 @@ def ensure_schema(engine: Engine) -> None:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE eligible_voters ADD COLUMN pin_hash VARCHAR(255)"))
             logger.info("Added eligible_voters.pin_hash column")
+        if "idp_sub" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE eligible_voters ADD COLUMN idp_sub VARCHAR(200)"))
+            logger.info("Added eligible_voters.idp_sub column")
 
 
 def migrate_figma_urls(db: Session) -> None:

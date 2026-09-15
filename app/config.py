@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24
     seed_mock_data: bool | None = None
     redis_url: str | None = None
+    auth_mode: str = "both"  # local | oidc | both
+    keycloak_issuer: str | None = None
+    keycloak_client_id: str | None = None
+    # App access role (not a global poll superadmin). Empty = any valid company token.
+    keycloak_admin_role: str = "vote-admin"
 
     @property
     def should_seed_mock_data(self) -> bool:
@@ -46,6 +51,10 @@ class Settings(BaseSettings):
     @property
     def media_path(self) -> Path:
         return Path(self.media_dir)
+
+    @property
+    def keycloak_enabled(self) -> bool:
+        return bool(self.keycloak_issuer and self.keycloak_client_id)
 
     @property
     def frontend_dist_path(self) -> Path | None:

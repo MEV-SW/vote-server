@@ -12,12 +12,13 @@ from app.schemas.poll import (
     PollPublicListItem,
     PollPublicOut,
     ResultsOut,
+    VerifySsoRequest,
     VerifyVoterRequest,
     VerifyVoterResponse,
     VoteSubmit,
 )
 from app.services.aggregate_service import get_results
-from app.services.eligibility_service import verify_voter
+from app.services.eligibility_service import verify_sso, verify_voter
 from app.services.form_service import check_response, get_form_results, submit_response
 from app.services.poll_identity import is_form
 from app.services.vote_service import check_vote, submit_vote
@@ -122,6 +123,19 @@ def verify_poll_voter(
         phone=body.phone,
         pin=body.pin,
     )
+    return VerifyVoterResponse(**result)
+
+
+@router.post("/{poll_id}/verify-sso", response_model=VerifyVoterResponse)
+def verify_poll_voter_sso(
+    poll_id: int,
+    body: VerifySsoRequest,
+    db: Session = Depends(get_db),
+) -> VerifyVoterResponse:
+    poll = _get_poll_or_404(db, poll_id)
+    if poll.status not in ("active", "closed"):
+        raise HTTPException(status_code=403, detail="Poll is not available")
+    result = verify_sso(db, poll, body.access_token)
     return VerifyVoterResponse(**result)
 
 

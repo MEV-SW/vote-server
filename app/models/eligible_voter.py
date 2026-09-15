@@ -15,6 +15,7 @@ class EligibleVoter(Base):
     __table_args__ = (
         UniqueConstraint("poll_id", "email_norm", name="uq_ev_poll_email"),
         UniqueConstraint("poll_id", "phone_norm", name="uq_ev_poll_phone"),
+        UniqueConstraint("poll_id", "idp_sub", name="uq_ev_poll_idp_sub"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -26,6 +27,7 @@ class EligibleVoter(Base):
     email_norm: Mapped[str | None] = mapped_column(String(200))
     phone_norm: Mapped[str | None] = mapped_column(String(30))
     pin_hash: Mapped[str | None] = mapped_column(String(255))
+    idp_sub: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     poll: Mapped["Poll"] = relationship("Poll", back_populates="eligible_voters")
